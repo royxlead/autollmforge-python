@@ -1,0 +1,32 @@
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=8000
+API_RELOAD=true
+ENVIRONMENT=development
+
+# CORS Settings
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
+
+# Hugging Face
+HF_TOKEN=
+HF_CACHE_DIR=./cache/huggingface
+
+# Redis (for job queue)
+REDIS_URL=redis://localhost:6379/0
+
+# Storage
+MODELS_DIR=./storage/models
+DATASETS_DIR=./storage/datasets
+OUTPUTS_DIR=./storage/outputs
+TEMP_DIR=./storage/temp
+
+# QLoRA Training Configuration (Optimized Defaults)
+MAX_CONCURRENT_TRAININGS=2
+DEFAULT_DEVICE=cuda
+MIXED_PRECISION=fp16
+USE_QLORA_BY_DEFAULT=true
+DEFAULT_QUANTIZATION=4bit
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=./logs/app.log

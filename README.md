@@ -11,8 +11,15 @@
 
 <div align="center">
   
-🚀 **[Live Demo](#)** | 📖 **[Documentation](#)** | 🐛 **[Report Bug](https://github.com/royxlead/autollmforge-python/issues)** | ✨ **[Request Feature](https://github.com/royxlead/autollmforge-python/issues)**
+ **[Documentation](#)** | 🐛 **[Report Bug](https://github.com/royxlead/autollmforge-python/issues)** | ✨ **[Request Feature](https://github.com/royxlead/autollmforge-python/issues)**
 
+</div>
+
+## 🎬 Welcome Screen
+
+<div align="center">
+  <img src="./assets/welcome.png" alt="AutoLLM Forge Welcome Screen" width="800"/>
+  <p><i>Beautiful welcome screen explaining the 5-step fine-tuning process</i></p>
 </div>
 
 ## ✨ Features
@@ -55,27 +62,7 @@
 - **Gradient Checkpointing**: Reduce memory footprint
 - **Mixed Precision**: FP16/BF16 training
 
-## 🎬 Demo & Screenshots
-
-### 5-Step Pipeline
-
-1. **🔍 Model Analysis** - Select and analyze any Hugging Face model
-2. **📊 Dataset Upload** - Upload JSON datasets with validation
-3. **⚙️ Hyperparameter Tuning** - Get AI-powered recommendations
-4. **🔥 Training** - Monitor real-time progress with live metrics
-5. **📦 Code Export** - Download production-ready deployment code
-
-<div align="center">
-  <img src="https://via.placeholder.com/800x450?text=Welcome+Screen" alt="Welcome Screen" width="800"/>
-  <p><i>Beautiful welcome screen explaining the complete workflow</i></p>
-</div>
-
-<div align="center">
-  <img src="https://via.placeholder.com/800x450?text=Training+Progress" alt="Training Progress" width="800"/>
-  <p><i>Real-time training progress with live metrics and detailed status messages</i></p>
-</div>
-
-## 🎯 Use Cases
+##  Use Cases
 
 | User | Benefit |
 |------|---------|
