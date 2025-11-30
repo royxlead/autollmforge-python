@@ -33,6 +33,8 @@
 - **💾 Memory Optimized**: Train 7B models on 16GB VRAM, 13B on 24GB, 70B on 80GB
 - **💻 Code Generation**: Production-ready inference scripts, Gradio apps, FastAPI servers, and documentation
 - **📦 Complete Export**: One-click download of fine-tuned models with all deployment files
+- **📊 Automated Evaluation**: Built-in perplexity testing and automatic Model Card generation
+- **🧪 Experiment Tracking**: Track metrics, loss curves, and artifacts for every training run
 - **🎨 Modern UI**: Beautiful dark theme with glassmorphism effects and smooth animations
 - **🔐 Secure**: Hugging Face token authentication for gated models (Llama, Gemma, etc.)
 
@@ -130,7 +132,7 @@
 - Node.js 18+
 - npm or yarn or pnpm
 
-## � Quick Start
+##  Quick Start
 
 ### 1️⃣ Clone Repository
 
@@ -324,6 +326,34 @@ docker-compose up
 - 💾 **Download** individual files
 - 📦 **Export All** - ZIP with model + all code
 
+### 🧪 CLI Experiment Runner
+
+For automated experiments without the UI, use the CLI runner:
+
+```bash
+# 1. Create experiment config
+echo '{
+  "job_name": "llama2-experiment-1",
+  "training_config": {
+    "model_id": "meta-llama/Llama-2-7b-hf",
+    "dataset_id": "data/train.json",
+    "num_epochs": 3,
+    "learning_rate": 2e-4,
+    "use_lora": true
+  }
+}' > experiment_config.json
+
+# 2. Run experiment
+python backend/scripts/run_experiment.py experiment_config.json
+```
+
+This will:
+1. Analyze the model
+2. Validate the dataset
+3. Run training with progress logging
+4. **Automatically evaluate** the model (perplexity, loss)
+5. **Generate a Model Card** (model_card.json)
+
 ## 📁 Project Structure
 
 ```
@@ -343,7 +373,11 @@ autollmforge-python/
 │   │   ├── dataset_processor.py      # Dataset validation
 │   │   ├── training_service.py       # QLoRA training pipeline
 │   │   ├── quantization_service.py   # Post-training quantization
+│   │   ├── eval_service.py           # Model evaluation & cards
 │   │   └── code_generator.py         # Production code templates
+│   │
+│   ├── scripts/
+│   │   └── run_experiment.py         # CLI experiment runner
 │   │
 │   ├── utils/
 │   │   ├── hf_utils.py               # Hugging Face helpers
@@ -399,6 +433,9 @@ autollmforge-python/
 | `POST` | `/api/generate-code` | Generate deployment code |
 | `GET` | `/api/download-model/{job_id}` | Download fine-tuned model |
 | `GET` | `/api/download-package/{job_id}` | Download complete ZIP |
+| `POST` | `/api/quantize` | Quantize existing model |
+| `GET` | `/api/experiment/{job_id}/eval` | Get evaluation metrics |
+| `POST` | `/api/experiment/{job_id}/evaluate` | Run evaluation & generate card |
 
 ### Example: Start Training
 
