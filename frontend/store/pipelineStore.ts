@@ -9,6 +9,9 @@ import type {
   TrainingConfig,
   TrainingProgress,
   QuantizationResult,
+  EvalMetrics,
+  ModelCard,
+  ExperimentMetadata,
 } from '@/types';
 
 interface PipelineStore extends PipelineState {
@@ -21,6 +24,9 @@ interface PipelineStore extends PipelineState {
   setTrainingJobId: (jobId: string | null) => void;
   setTrainingProgress: (progress: TrainingProgress | null) => void;
   setQuantizationResult: (result: QuantizationResult | null) => void;
+  setEvalMetrics: (metrics: EvalMetrics | null) => void;
+  setModelCard: (card: ModelCard | null) => void;
+  setExperimentMetadata: (metadata: ExperimentMetadata | null) => void;
   reset: () => void;
   canProceedToStep: (step: PipelineStep) => boolean;
 }
@@ -35,6 +41,9 @@ const initialState: PipelineState = {
   trainingJobId: null,
   trainingProgress: null,
   quantizationResult: null,
+  evalMetrics: null,
+  modelCard: null,
+  experimentMetadata: null,
 };
 
 export const usePipelineStore = create<PipelineStore>()(
@@ -90,6 +99,12 @@ export const usePipelineStore = create<PipelineStore>()(
           get().completeStep('quantization');
         }
       },
+
+      setEvalMetrics: (metrics) => set({ evalMetrics: metrics }),
+
+      setModelCard: (card) => set({ modelCard: card }),
+
+      setExperimentMetadata: (metadata) => set({ experimentMetadata: metadata }),
 
       reset: () => set(initialState),
 

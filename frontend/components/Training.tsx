@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { usePipelineStore } from '@/store/pipelineStore';
 import type { TrainingProgress } from '@/types';
-import { Play, CheckCircle, AlertCircle, Zap } from 'lucide-react';
+import { Play, CheckCircle, AlertCircle, Zap, Activity, Cpu, BarChart3, Download } from 'lucide-react';
 
 export default function Training() {
   const { trainingConfig, setTrainingJobId, setTrainingProgress, setCurrentStep, trainingJobId, trainingProgress } = usePipelineStore();
@@ -298,9 +298,44 @@ export default function Training() {
                 </div>
               </div>
               <div className="group bg-black/40 rounded-xl p-5 border border-white/10 hover:border-green-500/30 transition-all duration-300 hover:scale-105">
-                <div className="text-xs font-bold text-green-400 mb-2 tracking-wider">GPU MEMORY</div>
+                <div className="text-xs font-bold text-green-400 mb-2 tracking-wider">GRAD NORM</div>
                 <div className="text-2xl font-bold text-white group-hover:text-green-50 transition-colors">
-                  {trainingProgress.gpu_memory_usage ? `${trainingProgress.gpu_memory_usage}GB` : 'N/A'}
+                  {trainingProgress.latest_metrics?.grad_norm?.toFixed(4) || 'N/A'}
+                </div>
+              </div>
+            </div>
+
+            {/* Memory Profiling Section */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              <div className="group bg-black/40 rounded-xl p-5 border border-white/10 hover:border-purple-500/30 transition-all duration-300 hover:scale-105">
+                <div className="text-xs font-bold text-purple-400 mb-2 tracking-wider flex items-center gap-1">
+                  <Cpu className="w-3 h-3" /> GPU MEMORY
+                </div>
+                <div className="text-2xl font-bold text-white group-hover:text-purple-50 transition-colors">
+                  {trainingProgress.gpu_memory_usage ? `${trainingProgress.gpu_memory_usage.toFixed(1)}GB` : 'N/A'}
+                </div>
+              </div>
+              <div className="group bg-black/40 rounded-xl p-5 border border-white/10 hover:border-purple-500/30 transition-all duration-300 hover:scale-105">
+                <div className="text-xs font-bold text-purple-400 mb-2 tracking-wider flex items-center gap-1">
+                  <Activity className="w-3 h-3" /> GPU UTIL
+                </div>
+                <div className="text-2xl font-bold text-white group-hover:text-purple-50 transition-colors">
+                  {trainingProgress.gpu_utilization ? `${trainingProgress.gpu_utilization.toFixed(0)}%` : 'N/A'}
+                </div>
+              </div>
+              <div className="group bg-black/40 rounded-xl p-5 border border-white/10 hover:border-purple-500/30 transition-all duration-300 hover:scale-105">
+                <div className="text-xs font-bold text-purple-400 mb-2 tracking-wider flex items-center gap-1">
+                  <BarChart3 className="w-3 h-3" /> THROUGHPUT
+                </div>
+                <div className="text-2xl font-bold text-white group-hover:text-purple-50 transition-colors">
+                  {trainingProgress.samples_per_second?.toFixed(1) || 'N/A'}
+                  <span className="text-sm text-gray-400 ml-1">s/s</span>
+                </div>
+              </div>
+              <div className="group bg-black/40 rounded-xl p-5 border border-white/10 hover:border-purple-500/30 transition-all duration-300 hover:scale-105">
+                <div className="text-xs font-bold text-purple-400 mb-2 tracking-wider">VAL LOSS</div>
+                <div className="text-2xl font-bold text-white group-hover:text-purple-50 transition-colors">
+                  {trainingProgress.val_loss?.toFixed(4) || 'N/A'}
                 </div>
               </div>
             </div>
@@ -319,6 +354,52 @@ export default function Training() {
                       <span className="text-white font-bold">{Math.floor(trainingProgress.eta_seconds / 60)} minutes</span>
                     </div>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* Experiment Data Download - Show when complete */}
+            {isCompleted && (
+              <div className="mt-6 pt-6 border-t border-white/10">
+                <h4 className="font-bold text-white mb-4 flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-green-400" />
+                  Experiment Artifacts
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <a
+                    href={`http://localhost:8000/api/download-file/${trainingJobId}/training_metrics.json`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 px-4 py-3 bg-black/40 rounded-lg border border-white/10 hover:border-green-500/30 transition-all text-sm text-gray-300 hover:text-white"
+                  >
+                    <Download className="w-4 h-4" />
+                    Metrics JSON
+                  </a>
+                  <a
+                    href={`http://localhost:8000/storage/experiments/${trainingJobId}/loss.png`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 px-4 py-3 bg-black/40 rounded-lg border border-white/10 hover:border-green-500/30 transition-all text-sm text-gray-300 hover:text-white"
+                  >
+                    <BarChart3 className="w-4 h-4" />
+                    Loss Graph
+                  </a>
+                  <a
+                    href={`http://localhost:8000/storage/experiments/${trainingJobId}/metadata.json`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 px-4 py-3 bg-black/40 rounded-lg border border-white/10 hover:border-purple-500/30 transition-all text-sm text-gray-300 hover:text-white"
+                  >
+                    <Activity className="w-4 h-4" />
+                    Experiment Config
+                  </a>
+                  <a
+                    href={`http://localhost:8000/api/download-model/${trainingJobId}`}
+                    className="flex items-center gap-2 px-4 py-3 bg-green-600/20 rounded-lg border border-green-500/30 hover:bg-green-600/30 transition-all text-sm text-green-300 hover:text-green-200 font-semibold"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Model
+                  </a>
                 </div>
               </div>
             )}

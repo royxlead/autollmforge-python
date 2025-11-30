@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     models_dir: str = "./storage/models"
     datasets_dir: str = "./storage/datasets"
     outputs_dir: str = "./storage/outputs"
+    experiments_dir: str = "./storage/experiments"
     temp_dir: str = "./storage/temp"
     
     # Training Configuration (QLoRA defaults)
@@ -37,6 +38,7 @@ class Settings(BaseSettings):
     mixed_precision: str = "fp16"
     use_qlora_by_default: bool = True
     default_quantization: str = "4bit"  # QLoRA uses 4-bit by default
+    global_seed: int = 42
     
     # Logging
     log_level: str = "INFO"
@@ -62,6 +64,7 @@ class Settings(BaseSettings):
             self.models_dir,
             self.datasets_dir,
             self.outputs_dir,
+            self.experiments_dir,
             self.temp_dir,
             Path(self.log_file).parent,
             self.hf_cache_dir

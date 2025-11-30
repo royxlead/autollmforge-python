@@ -1,14 +1,30 @@
 """Training service for fine-tuning models."""
 
+import os
+# Disable torch.compile before importing torch (not supported on Python 3.14+)
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+
 import asyncio
 import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 import json
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Disable torch dynamo/compile for Python 3.14+ compatibility
+import torch
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+torch._dynamo.disable()
+
 from models.schemas import TrainingConfig, TrainingProgress, TrainingStatus, TrainingMetrics
 from utils.logger import get_logger
 from config import settings
+from services.dataset_processor import DatasetProcessor
 
 logger = get_logger(__name__)
 
@@ -20,7 +36,24 @@ class TrainingService:
         """Initialize training service."""
         self.output_dir = Path(settings.outputs_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.experiments_dir = Path(settings.experiments_dir)
+        self.experiments_dir.mkdir(parents=True, exist_ok=True)
         self.active_jobs: Dict[str, Dict[str, Any]] = {}
+        self.dataset_processor = DatasetProcessor()
+
+    def _set_seed(self, seed: int):
+        """Set global seeds for reproducibility."""
+        random.seed(seed)
+        np.random.seed(seed)
+        try:
+            import torch
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+        except ImportError:
+            pass
+
     
     async def start_training(
         self,
@@ -214,12 +247,21 @@ class TrainingService:
 
     async def _run_actual_training(self, job_id: str):
         import torch
+        
+        # Monkeypatch torch.compile to be a no-op if it exists
+        # This is a workaround for "torch.compile is not supported on Python 3.14+" error
+        if hasattr(torch, 'compile'):
+            def no_op_compile(model, *args, **kwargs):
+                return model
+            torch.compile = no_op_compile
+            
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
             TrainingArguments,
             Trainer,
-            BitsAndBytesConfig
+            BitsAndBytesConfig,
+            TrainerCallback
         )
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         from datasets import load_dataset
@@ -227,23 +269,35 @@ class TrainingService:
         job_state = self.active_jobs[job_id]
         config: TrainingConfig = job_state["config"]
         output_dir = Path(job_state["output_dir"])
+        experiment_dir = self.experiments_dir / job_id
+        experiment_dir.mkdir(parents=True, exist_ok=True)
         
         try:
             job_state["status"] = TrainingStatus.RUNNING
             job_state["progress_message"] = "🚀 Initializing training job..."
-            logger.info(f"Initializing QLoRA training for job: {job_id}")
+            logger.info(f"Initializing training for job: {job_id}")
             
-            await asyncio.sleep(0.1)  # Allow UI to update
+            # 1. Deterministic Training
+            self._set_seed(config.seed)
             
+            await asyncio.sleep(0.1)
+            
+            # 2. CPU Fallback & Device Selection
             gpu_available = torch.cuda.is_available()
             logger.info(f"GPU available: {gpu_available}")
             
             if not gpu_available:
-                logger.warning("No GPU detected - disabling quantization for CPU training")
+                logger.warning("No GPU detected - disabling quantization and LoRA for CPU training")
                 job_state["progress_message"] = "⚠️ No GPU detected - using CPU mode (slower but compatible)"
+                config.load_in_4bit = False
+                config.load_in_8bit = False
+                config.fp16 = False
+                config.bf16 = False
+                # We might still want LoRA on CPU to save memory, but usually it's slow. 
+                # Keeping use_lora as per config, but disabling bitsandbytes.
             
-            await asyncio.sleep(0.1)  # Allow UI to update
-            job_state["progress_message"] = "📦 Downloading tokenizer (this may take a few minutes)..."
+            await asyncio.sleep(0.1)
+            job_state["progress_message"] = "📦 Downloading tokenizer..."
             logger.info(f"Loading tokenizer from {config.model_id}")
             
             tokenizer = AutoTokenizer.from_pretrained(
@@ -254,12 +308,17 @@ class TrainingService:
                 tokenizer.pad_token = tokenizer.eos_token
             
             job_state["progress_message"] = "✅ Tokenizer loaded successfully"
-            logger.info("Tokenizer loaded successfully")
             
-            if gpu_available and (config.load_in_4bit or config.load_in_8bit):
-                await asyncio.sleep(0.1)  # Allow UI to update
-                job_state["progress_message"] = "⚙️ Configuring 4-bit quantization..."
-                logger.info("Configuring quantization")
+            # 3. Model Loading (QLoRA vs Baseline)
+            model_kwargs = {
+                "trust_remote_code": True,
+                "token": settings.hf_token,
+                "use_cache": False if config.gradient_checkpointing else True
+            }
+            
+            if gpu_available and config.qlora and (config.load_in_4bit or config.load_in_8bit):
+                await asyncio.sleep(0.1)
+                job_state["progress_message"] = "⚙️ Configuring quantization..."
                 
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=config.load_in_4bit,
@@ -268,77 +327,39 @@ class TrainingService:
                     bnb_4bit_quant_type=config.bnb_4bit_quant_type,
                     bnb_4bit_use_double_quant=config.bnb_4bit_use_double_quant,
                 )
+                model_kwargs["quantization_config"] = bnb_config
+                model_kwargs["device_map"] = "auto"
+                model_kwargs["torch_dtype"] = torch.float16
                 
-                await asyncio.sleep(0.1)  # Allow UI to update
-                job_state["progress_message"] = f"📥 Downloading model {config.model_id.split('/')[-1]} with 4-bit quantization (this may take 5-10 minutes)..."
-                logger.info(f"Loading model {config.model_id} with quantization (GPU)...")
-                
-                model = AutoModelForCausalLM.from_pretrained(
-                    config.model_id,
-                    quantization_config=bnb_config,
-                    device_map="auto",
-                    torch_dtype=torch.float16,
-                    trust_remote_code=True,
-                    use_cache=False if config.gradient_checkpointing else True,
-                    token=settings.hf_token
-                )
-                
-                job_state["progress_message"] = "🔧 Preparing model for QLoRA training..."
-                logger.info("Preparing model for k-bit training")
-                
-                model = prepare_model_for_kbit_training(
-                    model,
-                    use_gradient_checkpointing=config.gradient_checkpointing
-                )
-                
-                job_state["progress_message"] = "✅ Model loaded and quantized successfully"
-                logger.info("Model prepared successfully")
+                logger.info(f"Loading model {config.model_id} with quantization...")
             else:
-                await asyncio.sleep(0.1)  # Allow UI to update
-                job_state["progress_message"] = f"📥 Downloading model {config.model_id.split('/')[-1]} (CPU mode, this may take 10-15 minutes)..."
-                logger.info(f"Loading model {config.model_id} on CPU (no quantization)...")
-                
-                model = AutoModelForCausalLM.from_pretrained(
-                    config.model_id,
-                    torch_dtype=torch.float32,
-                    trust_remote_code=True,
-                    use_cache=False if config.gradient_checkpointing else True,
-                    token=settings.hf_token
-                )
-                
-                job_state["progress_message"] = "✅ Model loaded successfully"
-                logger.info("Model loaded successfully")
+                await asyncio.sleep(0.1)
+                job_state["progress_message"] = f"📥 Downloading model {config.model_id} (Standard Mode)..."
+                logger.info(f"Loading model {config.model_id} without quantization...")
+                model_kwargs["torch_dtype"] = torch.float32
+            
+            model = AutoModelForCausalLM.from_pretrained(config.model_id, **model_kwargs)
             
             if config.gradient_checkpointing:
-                await asyncio.sleep(0.1)  # Allow UI to update
-                job_state["progress_message"] = "🔧 Enabling gradient checkpointing for memory efficiency..."
                 model.gradient_checkpointing_enable()
-                logger.info("Gradient checkpointing enabled")
             
+            # 4. Prepare for LoRA (if enabled)
             if config.use_lora:
-                await asyncio.sleep(0.1)  # Allow UI to update
+                if gpu_available and config.qlora and (config.load_in_4bit or config.load_in_8bit):
+                    model = prepare_model_for_kbit_training(
+                        model,
+                        use_gradient_checkpointing=config.gradient_checkpointing
+                    )
+                
                 job_state["progress_message"] = "🎯 Configuring LoRA adapters..."
-                logger.info("Configuring LoRA adapters...")
                 
                 if not config.lora_config:
-                    logger.warning("use_lora is True but lora_config is None, creating default config")
                     from models.schemas import LoRAConfig
                     config.lora_config = LoRAConfig()
                 
                 target_modules = config.lora_config.target_modules
-                logger.info(f"Target modules type: {type(target_modules)}, value: {target_modules}")
-                
                 if config.model_id.lower().startswith('gpt2') or 'gpt2' in config.model_id.lower():
-                    logger.info("Detected GPT-2 model, using c_attn for LoRA target modules")
                     target_modules = ["c_attn"]
-                elif isinstance(target_modules, str):
-                    logger.warning(f"Converting target_modules from string to list: {target_modules}")
-                    target_modules = ["q_proj", "v_proj"]
-                elif not isinstance(target_modules, list):
-                    logger.error(f"Unexpected target_modules type: {type(target_modules)}")
-                    target_modules = ["q_proj", "v_proj"]
-                
-                logger.info(f"Final target_modules for LoRA: {target_modules}")
                 
                 peft_config = LoraConfig(
                     r=config.lora_config.r,
@@ -352,101 +373,129 @@ class TrainingService:
                 
                 model = get_peft_model(model, peft_config)
                 model.print_trainable_parameters()
-                
-                job_state["progress_message"] = "✅ LoRA adapters configured successfully"
-                logger.info("LoRA configuration complete")
             
-            await asyncio.sleep(0.1)  # Allow UI to update
-            job_state["progress_message"] = "📊 Loading and validating dataset..."
-            logger.info(f"Loading dataset: {config.dataset_id}")
+            # 5. Dataset Loading & Caching
+            await asyncio.sleep(0.1)
+            job_state["progress_message"] = "📊 Loading and tokenizing dataset..."
             
             try:
-                dataset = load_dataset("json", data_files=config.dataset_id, split="train")
-            except Exception as e:
-                raise ValueError(f"Failed to load dataset file. Make sure the file exists and is valid JSON. Error: {str(e)}")
-            
-            job_state["progress_message"] = "✅ Dataset loaded successfully"
-            await asyncio.sleep(0.1)  # Allow UI to update
-            
-            if "text" not in dataset.column_names:
-                raise ValueError(
-                    f"Dataset must contain a 'text' field. Found columns: {dataset.column_names}. "
-                    f"Please format your dataset as JSON with each entry having a 'text' field. "
-                    f"Example: {{'text': 'Your training text here'}}"
-                )
-            
-            job_state["progress_message"] = f"📊 Splitting dataset ({len(dataset)} samples)..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            
-            if config.validation_split > 0:
-                split_dataset = dataset.train_test_split(
-                    test_size=config.validation_split,
+                # Use the cached dataset processor
+                tokenized_dataset = await self.dataset_processor.get_tokenized_dataset(
+                    dataset_path=config.dataset_id,
+                    tokenizer_name=config.model_id,
+                    max_seq_length=config.max_seq_length,
+                    validation_split=config.validation_split,
                     seed=config.seed
                 )
-                train_dataset = split_dataset["train"]
-                eval_dataset = split_dataset["test"]
-            else:
-                train_dataset = dataset
-                eval_dataset = None
-            
-            def tokenize_function(examples):
-                tokenized = tokenizer(
-                    examples["text"],
-                    truncation=True,
-                    max_length=config.max_seq_length,
-                    padding="max_length"
-                )
-                tokenized["labels"] = tokenized["input_ids"].copy()
-                return tokenized
-            
-            job_state["progress_message"] = "🔤 Tokenizing training dataset..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            logger.info("Tokenizing dataset...")
-            
-            train_dataset = train_dataset.map(
-                tokenize_function,
-                batched=True,
-                remove_columns=train_dataset.column_names,
-                desc="Tokenizing train dataset"
-            )
-            
-            job_state["progress_message"] = "✅ Training dataset tokenized"
-            await asyncio.sleep(0.1)  # Allow UI to update
-            
-            if eval_dataset:
-                job_state["progress_message"] = "🔤 Tokenizing validation dataset..."
-                await asyncio.sleep(0.1)  # Allow UI to update
                 
-                eval_dataset = eval_dataset.map(
-                    tokenize_function,
-                    batched=True,
-                    remove_columns=eval_dataset.column_names,
-                    desc="Tokenizing eval dataset"
-                )
+                if config.validation_split > 0:
+                    train_dataset = tokenized_dataset["train"]
+                    eval_dataset = tokenized_dataset["test"]
+                else:
+                    train_dataset = tokenized_dataset
+                    eval_dataset = None
+                    
+            except Exception as e:
+                logger.error(f"Dataset processing failed: {e}")
+                raise ValueError(f"Failed to process dataset: {str(e)}")
+
+            # 6. Experiment Tracking & Callbacks
+            class ExperimentCallback(TrainerCallback):
+                def __init__(self, job_state, experiment_dir):
+                    self.job_state = job_state
+                    self.experiment_dir = experiment_dir
+                    self.metrics_history = []
+                    self.loss_history = []
+                    self.steps_history = []
                 
-                job_state["progress_message"] = "✅ Validation dataset tokenized"
-                await asyncio.sleep(0.1)  # Allow UI to update
+                def on_step_end(self, args, state, control, **kwargs):
+                    """Update progress after every step."""
+                    self.job_state["current_step"] = state.global_step
+                    self.job_state["current_epoch"] = state.epoch
+                    
+                def on_log(self, args, state, control, logs=None, **kwargs):
+                    if logs:
+                        # Memory Profiling
+                        if torch.cuda.is_available():
+                            logs["gpu_mem_allocated"] = torch.cuda.memory_allocated()
+                            logs["gpu_mem_reserved"] = torch.cuda.memory_reserved()
+                        
+                        # Structured JSON Logging
+                        log_entry = {
+                            "step": state.global_step,
+                            "timestamp": datetime.now().isoformat(),
+                            **logs
+                        }
+                        
+                        with open(self.experiment_dir / "metrics.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+                        
+                        # Update Job State
+                        loss = logs.get("loss")
+                        if loss:
+                            self.loss_history.append(loss)
+                            self.steps_history.append(state.global_step)
+                            
+                            # Update in-memory metrics for UI
+                            metrics = TrainingMetrics(
+                                step=state.global_step,
+                                epoch=state.epoch,
+                                train_loss=loss,
+                                learning_rate=logs.get("learning_rate", args.learning_rate),
+                                grad_norm=logs.get("grad_norm", 0.0),
+                                samples_per_second=logs.get("samples_per_second", 0.0),
+                                steps_per_second=logs.get("steps_per_second", 0.0)
+                            )
+                            self.job_state["metrics"].append(metrics.dict())
+                            self.job_state["progress_message"] = f"🔥 Step {state.global_step}/{state.max_steps} | Loss: {loss:.4f}"
+                            
+                            # 7. Graph Persistence
+                            if len(self.steps_history) > 1:
+                                try:
+                                    plt.figure(figsize=(10, 6))
+                                    plt.plot(self.steps_history, self.loss_history, label="Training Loss")
+                                    plt.xlabel("Steps")
+                                    plt.ylabel("Loss")
+                                    plt.title(f"Training Loss - {self.job_state['job_name']}")
+                                    plt.legend()
+                                    plt.grid(True)
+                                    plt.savefig(self.experiment_dir / "loss.png")
+                                    plt.close()
+                                except Exception as plot_err:
+                                    logger.warning(f"Failed to save loss plot: {plot_err}")
+
+                def on_train_begin(self, args, state, control, **kwargs):
+                    self.job_state["total_steps"] = state.max_steps
+                    self.job_state["status"] = TrainingStatus.RUNNING
+                    
+                    # Save experiment metadata (Ablations)
+                    metadata = {
+                        "config": self.job_state["config"].dict(),
+                        "ablations": {
+                            "use_gradient_checkpointing": config.gradient_checkpointing,
+                            "use_double_quant": config.bnb_4bit_use_double_quant,
+                            "use_paged_optimizers": config.use_paged_optimizers,
+                            "qlora": config.qlora
+                        },
+                        "environment": {
+                            "gpu_available": torch.cuda.is_available(),
+                            "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                            "torch_version": torch.__version__
+                        }
+                    }
+                    with open(self.experiment_dir / "metadata.json", "w") as f:
+                        json.dump(metadata, f, indent=2)
+
+            # 7. Training Arguments
+            optim_type = "paged_adamw_8bit" if (gpu_available and config.use_paged_optimizers) else "adamw_torch"
             
-            # Calculate total steps for progress tracking
-            num_samples = len(train_dataset)
-            steps_per_epoch = num_samples // (config.batch_size * config.gradient_accumulation_steps)
-            if steps_per_epoch == 0:
-                steps_per_epoch = max(1, num_samples // config.batch_size)
-            total_steps = steps_per_epoch * config.num_epochs
-            job_state["total_steps"] = total_steps
-            job_state["current_step"] = 0
-            job_state["current_epoch"] = 0
-            logger.info(f"📊 Training plan: {num_samples} samples → {steps_per_epoch} steps/epoch × {config.num_epochs} epochs = {total_steps} total steps")
-            
-            job_state["progress_message"] = f"⚙️ Setting up training ({total_steps} total steps across {config.num_epochs} epochs)..."
-            await asyncio.sleep(0.1)  # Allow UI to update
             training_args = TrainingArguments(
                 output_dir=str(output_dir),
                 num_train_epochs=config.num_epochs,
                 per_device_train_batch_size=config.batch_size,
                 gradient_accumulation_steps=config.gradient_accumulation_steps,
                 gradient_checkpointing=config.gradient_checkpointing,
-                optim="paged_adamw_8bit" if gpu_available else "adamw_torch",
+                optim=optim_type,
                 learning_rate=config.learning_rate,
                 weight_decay=config.weight_decay,
                 max_grad_norm=config.max_grad_norm,
@@ -454,7 +503,7 @@ class TrainingService:
                 warmup_steps=config.warmup_steps,
                 fp16=(config.fp16 and not config.bf16) if gpu_available else False,
                 bf16=config.bf16 if gpu_available else False,
-                logging_steps=config.logging_steps,
+                logging_steps=1,  # Force logging every step for real-time UI updates
                 save_steps=config.save_steps,
                 eval_steps=config.eval_steps if eval_dataset else None,
                 save_total_limit=config.save_total_limit,
@@ -464,114 +513,8 @@ class TrainingService:
                 report_to=config.report_to,
                 ddp_find_unused_parameters=False,
                 remove_unused_columns=False,
+                torch_compile=False,  # Disable torch.compile (not supported on Python 3.14+)
             )
-            
-            job_state["progress_message"] = "✅ Training configuration ready"
-            await asyncio.sleep(0.1)  # Allow UI to update
-            
-            # Estimate total steps for progress tracking
-            num_train_samples = len(train_dataset)
-            steps_per_epoch = num_train_samples // (config.batch_size * config.gradient_accumulation_steps)
-            estimated_total_steps = steps_per_epoch * config.num_epochs
-            job_state["total_steps"] = estimated_total_steps
-            logger.info(f"Estimated total steps: {estimated_total_steps} ({steps_per_epoch} steps/epoch)")
-            
-            # Custom callback to track progress
-            from transformers import TrainerCallback
-            
-            class ProgressCallback(TrainerCallback):
-                def __init__(self, job_state):
-                    self.job_state = job_state
-                    self.last_log_step = 0
-                    
-                def on_train_begin(self, args, state, control, **kwargs):
-                    """Update total steps when training actually begins."""
-                    self.job_state["total_steps"] = state.max_steps
-                    self.job_state["current_step"] = 0
-                    self.job_state["current_epoch"] = 0
-                    self.job_state["progress_message"] = f"🚀 Training loop starting! ({state.max_steps} total steps)"
-                    
-                    # Initialize first metric entry
-                    initial_metric = TrainingMetrics(
-                        step=0,
-                        epoch=0,
-                        train_loss=0.0,
-                        learning_rate=args.learning_rate,
-                        grad_norm=0.0,
-                        samples_per_second=0.0,
-                        steps_per_second=0.0
-                    )
-                    self.job_state["metrics"] = [initial_metric.dict()]
-                    logger.info(f"✅ Training loop initialized with {state.max_steps} steps")
-                    
-                def on_log(self, args, state, control, logs=None, **kwargs):
-                    """Capture metrics whenever logging happens."""
-                    logger.info(f"🔔 on_log called: logs={logs}, step={state.global_step}")
-                    
-                    if logs and state.global_step > 0:
-                        self.job_state["current_step"] = state.global_step
-                        self.job_state["total_steps"] = state.max_steps
-                        self.job_state["current_epoch"] = state.epoch
-                        
-                        loss = logs.get("loss", None)
-                        lr = logs.get("learning_rate", None)
-                        
-                        logger.info(f"📊 Logging callback: Step {state.global_step}, Loss={loss}, LR={lr}, All logs: {list(logs.keys())}")
-                        
-                        # Only add metrics if we have actual loss data
-                        if loss is not None:
-                            metrics = TrainingMetrics(
-                                step=state.global_step,
-                                epoch=state.epoch,
-                                train_loss=loss,
-                                learning_rate=lr if lr is not None else args.learning_rate,
-                                grad_norm=logs.get("grad_norm", 0.0),
-                                samples_per_second=logs.get("samples_per_second", 0.0),
-                                steps_per_second=logs.get("steps_per_second", 0.0)
-                            )
-                            self.job_state["metrics"].append(metrics.dict())
-                            self.job_state["progress_message"] = f"🔥 Step {state.global_step}/{state.max_steps} | Loss: {loss:.4f} | LR: {lr:.2e if lr else 0:.2e}"
-                            logger.info(f"✅ Added metric: Loss={loss:.4f}")
-                        
-                def on_step_end(self, args, state, control, **kwargs):
-                    """Update progress after each step."""
-                    self.job_state["current_step"] = state.global_step
-                    self.job_state["total_steps"] = state.max_steps
-                    self.job_state["current_epoch"] = state.epoch
-                    
-                    # If we have log history, extract the latest loss
-                    if state.log_history:
-                        latest_log = state.log_history[-1]
-                        loss = latest_log.get("loss", 0.0)
-                        lr = latest_log.get("learning_rate", 0.0)
-                        
-                        # Only update metrics if this step hasn't been logged yet (avoid duplicates from on_log)
-                        if state.global_step % args.logging_steps == 0 and (
-                            not self.job_state["metrics"] or 
-                            self.job_state["metrics"][-1]["step"] != state.global_step
-                        ):
-                            metrics = TrainingMetrics(
-                                step=state.global_step,
-                                epoch=state.epoch,
-                                train_loss=loss,
-                                learning_rate=lr,
-                                grad_norm=latest_log.get("grad_norm", 0.0),
-                                samples_per_second=latest_log.get("samples_per_second", 0.0),
-                                steps_per_second=latest_log.get("steps_per_second", 0.0)
-                            )
-                            self.job_state["metrics"].append(metrics.dict())
-                            logger.info(f"📊 Step end: Added metrics for step {state.global_step}")
-                        
-                        self.job_state["progress_message"] = f"⚡ Step {state.global_step}/{state.max_steps} | Loss: {loss:.4f}"
-                    else:
-                        self.job_state["progress_message"] = f"⚡ Training step {state.global_step}/{state.max_steps}"
-                    
-                    if state.global_step % 5 == 0:  # Log every 5 steps to avoid spam
-                        logger.info(f"Step {state.global_step}/{state.max_steps} completed")
-            
-            job_state["progress_message"] = "🏋️ Initializing Trainer..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            logger.info("Initializing Trainer...")
             
             trainer = Trainer(
                 model=model,
@@ -579,39 +522,20 @@ class TrainingService:
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 tokenizer=tokenizer,
-                callbacks=[ProgressCallback(job_state)]
+                callbacks=[ExperimentCallback(job_state, experiment_dir)]
             )
             
             job_state["progress_message"] = "🚀 Starting training loop..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            logger.info(f"Starting QLoRA training for job: {job_id}")
+            logger.info(f"Starting training for job: {job_id}")
             
             train_result = trainer.train()
             
-            # Add final metrics to job state
-            logger.info(f"Training completed with metrics: {train_result.metrics}")
-            final_metrics = TrainingMetrics(
-                step=job_state.get("current_step", job_state.get("total_steps", 0)),
-                epoch=train_result.metrics.get("epoch", config.num_epochs),
-                train_loss=train_result.metrics.get("train_loss", 0.0),
-                learning_rate=config.learning_rate,  # Final LR from config
-                grad_norm=0.0,
-                samples_per_second=train_result.metrics.get("train_samples_per_second", 0.0),
-                steps_per_second=train_result.metrics.get("train_steps_per_second", 0.0)
-            )
-            job_state["metrics"].append(final_metrics.dict())
-            job_state["progress_message"] = f"✅ Training completed! Final loss: {train_result.metrics.get('train_loss', 0.0):.4f}"
-            
+            # Save final model
             job_state["progress_message"] = "💾 Saving fine-tuned model..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            logger.info("Saving final model...")
-            
             trainer.save_model(str(output_dir / "final_model"))
             tokenizer.save_pretrained(str(output_dir / "final_model"))
             
-            job_state["progress_message"] = "📊 Saving training metrics..."
-            await asyncio.sleep(0.1)  # Allow UI to update
-            
+            # Save metrics
             metrics_file = output_dir / "training_metrics.json"
             with open(metrics_file, 'w') as f:
                 json.dump(train_result.metrics, f, indent=2)
@@ -619,10 +543,10 @@ class TrainingService:
             job_state["status"] = TrainingStatus.COMPLETED
             job_state["progress_message"] = "✅ Training completed successfully!"
             job_state["completed_at"] = datetime.now().isoformat()
-            logger.info(f"QLoRA training completed successfully: {job_id}")
+            logger.info(f"Training completed successfully: {job_id}")
             
         except Exception as e:
-            logger.error(f"QLoRA training failed for job {job_id}: {e}", exc_info=True)
+            logger.error(f"Training failed for job {job_id}: {e}", exc_info=True)
             job_state["status"] = TrainingStatus.FAILED
             job_state["error_message"] = str(e)
             job_state["completed_at"] = datetime.now().isoformat()

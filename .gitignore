@@ -32,6 +32,7 @@ backend/outputs/
 backend/logs/
 backend/.env
 backend/*.log
+backend/env
 
 # Node/Frontend
 frontend/node_modules/

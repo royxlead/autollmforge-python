@@ -1,3 +1,8 @@
+# Disable torch.compile before any imports (not supported on Python 3.14+)
+import os
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+os.environ["TORCHDYNAMO_DISABLE"] = "1"
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
@@ -15,7 +20,7 @@ from models.schemas import (
     StartTrainingRequest, JobResponse, TrainingProgress,
     QuantizationRequest, QuantizationResult,
     CodeGenerationRequest, GeneratedCode,
-    ErrorResponse
+    ErrorResponse, ComputeTier, TaskType
 )
 from services.model_analyzer import ModelAnalyzer
 from services.hyperparameter_optimizer import HyperparameterOptimizer
@@ -229,8 +234,8 @@ async def recommend_hyperparameters(request: HyperparameterRequest):
         recommendations = hyperparameter_optimizer.recommend_hyperparameters(
             model_info=model_info,
             dataset_info=dataset_info,
-            compute_tier=request.compute_tier,
-            task_type=request.task_type
+            compute_tier=ComputeTier(request.compute_tier),
+            task_type=TaskType(request.task_type)
         )
         
         return recommendations
@@ -514,6 +519,205 @@ async def download_file(job_id: str, filename: str):
     except Exception as e:
         logger.error(f"File download failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ==================== EXPERIMENT & EVALUATION ENDPOINTS ====================
+
+@app.get("/api/experiment/{job_id}/eval")
+async def get_experiment_eval(job_id: str):
+    """Get evaluation metrics and model card for a training job"""
+    try:
+        experiment_dir = Path(settings.experiments_dir) / job_id
+        job_dir = Path(settings.outputs_dir) / job_id
+        
+        result = {"job_id": job_id, "metrics": None, "model_card": None}
+        
+        # Try to load metrics from experiment dir
+        metrics_file = experiment_dir / "metrics.json"
+        if not metrics_file.exists():
+            metrics_file = job_dir / "training_metrics.json"
+        
+        if metrics_file.exists():
+            with open(metrics_file, 'r') as f:
+                metrics_data = json.load(f)
+                
+            # Extract relevant metrics
+            training_logs = metrics_data.get("training_logs", [])
+            if training_logs:
+                last_log = training_logs[-1]
+                result["metrics"] = {
+                    "perplexity": metrics_data.get("perplexity"),
+                    "final_loss": last_log.get("loss"),
+                    "training_time_seconds": metrics_data.get("training_time"),
+                    "peak_memory_mb": max(
+                        (log.get("gpu_memory_mb", 0) for log in training_logs), 
+                        default=None
+                    ),
+                    "total_steps": len(training_logs),
+                }
+        
+        # Try to load model card
+        model_card_file = experiment_dir / "model_card.json"
+        if not model_card_file.exists():
+            model_card_file = job_dir / "model_card.json"
+            
+        if model_card_file.exists():
+            with open(model_card_file, 'r') as f:
+                result["model_card"] = json.load(f)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get experiment eval: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/experiment/{job_id}/metadata")
+async def get_experiment_metadata(job_id: str):
+    """Get experiment metadata including config and artifacts list"""
+    try:
+        experiment_dir = Path(settings.experiments_dir) / job_id
+        job_dir = Path(settings.outputs_dir) / job_id
+        
+        result = {
+            "experiment_id": job_id,
+            "seed": None,
+            "config": None,
+            "artifacts": {}
+        }
+        
+        # Try to load config
+        config_file = experiment_dir / "config.json"
+        if not config_file.exists():
+            config_file = job_dir / "config.json"
+            
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config_data = json.load(f)
+                result["config"] = config_data
+                result["seed"] = config_data.get("seed", 42)
+        
+        # List available artifacts
+        artifacts_to_check = [
+            ("metrics.json", "Metrics JSON"),
+            ("training_metrics.json", "Training Metrics"),
+            ("loss.png", "Loss Graph"),
+            ("config.json", "Config"),
+            ("model_card.json", "Model Card"),
+        ]
+        
+        for filename, display_name in artifacts_to_check:
+            file_path = experiment_dir / filename
+            if not file_path.exists():
+                file_path = job_dir / filename
+            if file_path.exists():
+                result["artifacts"][display_name] = str(file_path)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get experiment metadata: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/experiment/{job_id}/artifact/{artifact_name}")
+async def download_experiment_artifact(job_id: str, artifact_name: str):
+    """Download a specific experiment artifact"""
+    try:
+        experiment_dir = Path(settings.experiments_dir) / job_id
+        job_dir = Path(settings.outputs_dir) / job_id
+        
+        # Map artifact names to filenames
+        artifact_map = {
+            "Metrics JSON": "metrics.json",
+            "Training Metrics": "training_metrics.json",
+            "Loss Graph": "loss.png",
+            "Config": "config.json",
+            "Model Card": "model_card.json",
+        }
+        
+        filename = artifact_map.get(artifact_name, artifact_name)
+        
+        # Try experiment dir first, then job dir
+        file_path = experiment_dir / filename
+        if not file_path.exists():
+            file_path = job_dir / filename
+            
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_name}")
+        
+        media_type = "application/json"
+        if filename.endswith(".png"):
+            media_type = "image/png"
+        elif filename.endswith(".pdf"):
+            media_type = "application/pdf"
+            
+        return FileResponse(
+            path=str(file_path),
+            filename=filename,
+            media_type=media_type
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download artifact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/experiment/{job_id}/evaluate")
+async def run_evaluation(job_id: str):
+    """Run evaluation on a completed training job"""
+    try:
+        from services.eval_service import EvalService
+        
+        model_path = Path(settings.outputs_dir) / job_id / "final_model"
+        if not model_path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail="Model not found. Training may not be complete."
+            )
+        
+        eval_service = EvalService()
+        
+        # Run evaluation
+        metrics = await eval_service.evaluate_model(str(model_path))
+        
+        # Generate model card
+        config_file = Path(settings.outputs_dir) / job_id / "config.json"
+        config = {}
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+        
+        model_card = eval_service.generate_model_card(
+            model_id=config.get("model_id", "unknown"),
+            training_config=config,
+            eval_metrics=metrics
+        )
+        
+        # Save results
+        experiment_dir = Path(settings.experiments_dir) / job_id
+        experiment_dir.mkdir(parents=True, exist_ok=True)
+        
+        with open(experiment_dir / "eval_metrics.json", 'w') as f:
+            json.dump(metrics, f, indent=2)
+        
+        with open(experiment_dir / "model_card.json", 'w') as f:
+            json.dump(model_card, f, indent=2)
+        
+        return {
+            "status": "success",
+            "metrics": metrics,
+            "model_card": model_card
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Evaluation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):

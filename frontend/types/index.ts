@@ -84,6 +84,10 @@ export interface TrainingConfig {
   seed: number;
   group_by_length: boolean;
   report_to: string[];
+  // Ablation toggles
+  qlora: boolean;
+  use_paged_optimizers: boolean;
+  bnb_4bit_use_double_quant: boolean;
 }
 
 export interface HyperparameterRecommendation {
@@ -104,6 +108,8 @@ export interface TrainingMetrics {
   grad_norm: number | null;
   samples_per_second: number;
   steps_per_second: number;
+  gpu_mem_allocated?: number;
+  gpu_mem_reserved?: number;
 }
 
 export interface TrainingProgress {
@@ -127,6 +133,44 @@ export interface TrainingProgress {
   progress_message?: string;
   completed_at: string | null;
   error_message: string | null;
+}
+
+export interface ExperimentMetadata {
+  experiment_id: string;
+  seed: number | null;
+  config: TrainingConfig | null;
+  artifacts: Record<string, string>;
+}
+
+export interface EvalMetrics {
+  perplexity: number | null;
+  final_loss: number | null;
+  training_time_seconds: number | null;
+  peak_memory_mb: number | null;
+  total_steps: number | null;
+  eval_samples?: number;
+}
+
+export interface ModelCard {
+  model_name?: string;
+  base_model?: string;
+  created_at?: string;
+  language?: string;
+  tags?: string[];
+  library_name?: string;
+  description?: string;
+  model_id?: string;
+  job_id?: string;
+  date?: string;
+  training_config?: TrainingConfig;
+  dataset_stats?: DatasetInfo;
+  evaluation?: EvalMetrics;
+  ablations?: Record<string, boolean>;
+  environment?: Record<string, any>;
+  baseline_comparison?: {
+    qlora: boolean;
+    improvement_over_baseline: string;
+  };
 }
 
 export interface JobResponse {
@@ -182,6 +226,9 @@ export interface PipelineState {
   trainingJobId: string | null;
   trainingProgress: TrainingProgress | null;
   quantizationResult: QuantizationResult | null;
+  evalMetrics: EvalMetrics | null;
+  modelCard: ModelCard | null;
+  experimentMetadata: ExperimentMetadata | null;
 }
 
 export interface ApiError {

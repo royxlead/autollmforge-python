@@ -1,15 +1,49 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { usePipelineStore } from '@/store/pipelineStore';
-import { Download, Code, Rocket, FileText, CheckCircle, PackageOpen, AlertCircle, Sparkles } from 'lucide-react';
+import { Download, Code, Rocket, FileText, CheckCircle, PackageOpen, AlertCircle, Sparkles, BarChart3, FileCheck, Clock, Tag, User, Activity } from 'lucide-react';
 
 export default function CodeGeneration() {
-  const { modelInfo, trainingConfig, trainingJobId } = usePipelineStore();
+  const { modelInfo, trainingConfig, trainingJobId, evalMetrics, modelCard, experimentMetadata, setEvalMetrics, setModelCard, setExperimentMetadata } = usePipelineStore();
   const [selectedType, setSelectedType] = useState<'inference' | 'gradio' | 'api' | 'readme'>('inference');
   const [generatedCode, setGeneratedCode] = useState('');
   const [isDownloadingModel, setIsDownloadingModel] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [isLoadingEval, setIsLoadingEval] = useState(false);
+
+  // Fetch evaluation metrics and model card when training job is available
+  useEffect(() => {
+    const fetchEvalData = async () => {
+      if (!trainingJobId) return;
+      
+      setIsLoadingEval(true);
+      try {
+        // Fetch evaluation metrics
+        const evalResponse = await fetch(`http://localhost:8000/api/experiment/${trainingJobId}/eval`);
+        if (evalResponse.ok) {
+          const evalData = await evalResponse.json();
+          setEvalMetrics(evalData.metrics);
+          if (evalData.model_card) {
+            setModelCard(evalData.model_card);
+          }
+        }
+        
+        // Fetch experiment metadata
+        const metaResponse = await fetch(`http://localhost:8000/api/experiment/${trainingJobId}/metadata`);
+        if (metaResponse.ok) {
+          const metaData = await metaResponse.json();
+          setExperimentMetadata(metaData);
+        }
+      } catch (err) {
+        console.log('Could not fetch evaluation data:', err);
+      } finally {
+        setIsLoadingEval(false);
+      }
+    };
+    
+    fetchEvalData();
+  }, [trainingJobId, setEvalMetrics, setModelCard, setExperimentMetadata]);
 
   const codeTypes = [
     { id: 'inference' as const, label: 'Inference Script', icon: Code, description: 'Load and use your model' },
@@ -666,6 +700,183 @@ For questions about this fine-tuned model, please contact the model creator.
           </div>
         </div>
       </div>
+
+      {/* Evaluation Metrics Section */}
+      {(evalMetrics || isLoadingEval) && (
+        <div className="relative bg-gradient-to-br from-purple-500/20 to-purple-500/5 border border-purple-500/30 rounded-2xl p-8 overflow-hidden backdrop-blur-sm hover:border-purple-500/40 transition-all duration-300">
+          <div className="absolute top-0 right-0 w-40 h-40 bg-purple-500/10 rounded-full blur-3xl"></div>
+          <div className="relative">
+            <h3 className="font-bold text-white mb-6 flex items-center gap-3 text-2xl">
+              <BarChart3 className="w-7 h-7 text-purple-400" />
+              Evaluation Metrics
+            </h3>
+            
+            {isLoadingEval ? (
+              <div className="flex items-center gap-3 text-gray-400">
+                <div className="w-5 h-5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                Loading evaluation results...
+              </div>
+            ) : evalMetrics ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
+                  <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Perplexity</div>
+                  <div className="text-2xl font-bold text-purple-400">
+                    {evalMetrics.perplexity?.toFixed(2) || 'N/A'}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">Lower is better</div>
+                </div>
+                <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
+                  <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Final Loss</div>
+                  <div className="text-2xl font-bold text-purple-400">
+                    {evalMetrics.final_loss?.toFixed(4) || 'N/A'}
+                  </div>
+                </div>
+                <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
+                  <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Training Time</div>
+                  <div className="text-2xl font-bold text-purple-400">
+                    {evalMetrics.training_time_seconds 
+                      ? `${Math.floor(evalMetrics.training_time_seconds / 60)}m ${Math.floor(evalMetrics.training_time_seconds % 60)}s`
+                      : 'N/A'}
+                  </div>
+                </div>
+                <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
+                  <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Peak Memory</div>
+                  <div className="text-2xl font-bold text-purple-400">
+                    {evalMetrics.peak_memory_mb 
+                      ? `${(evalMetrics.peak_memory_mb / 1024).toFixed(2)} GB`
+                      : 'N/A'}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* Model Card Section */}
+      {modelCard && (
+        <div className="relative bg-gradient-to-br from-blue-500/20 to-blue-500/5 border border-blue-500/30 rounded-2xl p-8 overflow-hidden backdrop-blur-sm hover:border-blue-500/40 transition-all duration-300">
+          <div className="absolute top-0 right-0 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl"></div>
+          <div className="relative">
+            <h3 className="font-bold text-white mb-6 flex items-center gap-3 text-2xl">
+              <FileCheck className="w-7 h-7 text-blue-400" />
+              Model Card
+            </h3>
+            
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 text-sm">
+                  <Tag className="w-4 h-4 text-blue-400" />
+                  <span className="text-gray-400">Model Name:</span>
+                  <span className="text-white font-mono">{modelCard.model_name || 'N/A'}</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm">
+                  <Activity className="w-4 h-4 text-blue-400" />
+                  <span className="text-gray-400">Base Model:</span>
+                  <span className="text-white font-mono">{modelCard.base_model || 'N/A'}</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm">
+                  <Clock className="w-4 h-4 text-blue-400" />
+                  <span className="text-gray-400">Created:</span>
+                  <span className="text-white">{modelCard.created_at 
+                    ? new Date(modelCard.created_at).toLocaleString()
+                    : 'N/A'}</span>
+                </div>
+                {modelCard.language && (
+                  <div className="flex items-center gap-3 text-sm">
+                    <User className="w-4 h-4 text-blue-400" />
+                    <span className="text-gray-400">Language:</span>
+                    <span className="text-white">{modelCard.language}</span>
+                  </div>
+                )}
+              </div>
+              
+              <div className="space-y-4">
+                {modelCard.tags && modelCard.tags.length > 0 && (
+                  <div>
+                    <div className="text-xs text-gray-400 mb-2 uppercase tracking-wider">Tags</div>
+                    <div className="flex flex-wrap gap-2">
+                      {modelCard.tags.map((tag: string, idx: number) => (
+                        <span key={idx} className="px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-lg border border-blue-500/30">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {modelCard.library_name && (
+                  <div className="flex items-center gap-3 text-sm">
+                    <Code className="w-4 h-4 text-blue-400" />
+                    <span className="text-gray-400">Library:</span>
+                    <span className="text-white">{modelCard.library_name}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {modelCard.description && (
+              <div className="mt-6 pt-6 border-t border-blue-500/20">
+                <div className="text-xs text-gray-400 mb-2 uppercase tracking-wider">Description</div>
+                <p className="text-gray-300 text-sm leading-relaxed">{modelCard.description}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Experiment Metadata Section */}
+      {experimentMetadata && (
+        <div className="relative bg-gradient-to-br from-orange-500/20 to-orange-500/5 border border-orange-500/30 rounded-2xl p-8 overflow-hidden backdrop-blur-sm hover:border-orange-500/40 transition-all duration-300">
+          <div className="absolute top-0 right-0 w-40 h-40 bg-orange-500/10 rounded-full blur-3xl"></div>
+          <div className="relative">
+            <h3 className="font-bold text-white mb-6 flex items-center gap-3 text-2xl">
+              <FileText className="w-7 h-7 text-orange-400" />
+              Experiment Metadata
+            </h3>
+            
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="bg-black/30 rounded-xl p-4 border border-orange-500/20">
+                <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Experiment ID</div>
+                <div className="text-sm font-mono text-orange-400 break-all">
+                  {experimentMetadata.experiment_id || trainingJobId}
+                </div>
+              </div>
+              <div className="bg-black/30 rounded-xl p-4 border border-orange-500/20">
+                <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Seed</div>
+                <div className="text-2xl font-bold text-orange-400">
+                  {experimentMetadata.seed ?? trainingConfig?.seed ?? 42}
+                </div>
+              </div>
+              <div className="bg-black/30 rounded-xl p-4 border border-orange-500/20">
+                <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider">Status</div>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                  <span className="text-green-400 font-bold">Completed</span>
+                </div>
+              </div>
+            </div>
+
+            {experimentMetadata.artifacts && Object.keys(experimentMetadata.artifacts).length > 0 && (
+              <div className="mt-6 pt-6 border-t border-orange-500/20">
+                <div className="text-xs text-gray-400 mb-3 uppercase tracking-wider">Experiment Artifacts</div>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(experimentMetadata.artifacts).map(([name, path]) => (
+                    <a
+                      key={name}
+                      href={`http://localhost:8000/api/experiment/${trainingJobId}/artifact/${name}`}
+                      download
+                      className="px-3 py-2 bg-orange-500/20 text-orange-400 text-xs rounded-lg border border-orange-500/30 hover:bg-orange-500/30 transition-colors flex items-center gap-2"
+                    >
+                      <Download className="w-3 h-3" />
+                      {name}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Code Type Selection */}
       <div>

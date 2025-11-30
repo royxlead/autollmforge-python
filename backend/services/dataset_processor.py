@@ -242,3 +242,111 @@ class DatasetProcessor:
         
         logger.info(f"Dataset saved to {output_path}")
         return str(output_path)
+    
+    async def get_tokenized_dataset(
+        self,
+        dataset_path: str,
+        tokenizer_name: str,
+        max_seq_length: int,
+        validation_split: float = 0.1,
+        seed: int = 42
+    ):
+        import hashlib
+        from datasets import load_dataset, load_from_disk
+        from transformers import AutoTokenizer
+        
+        # Resolve dataset path
+        full_path = Path(dataset_path)
+        if not full_path.exists():
+            full_path = self.datasets_dir / dataset_path
+            if not full_path.exists():
+                raise FileNotFoundError(f"Dataset not found at {dataset_path} or {full_path}")
+        
+        dataset_path_str = str(full_path)
+
+        # Create a hash for the cache key
+        cache_key = hashlib.md5(
+            f"{dataset_path_str}_{tokenizer_name}_{max_seq_length}_{validation_split}_{seed}".encode()
+        ).hexdigest()
+        
+        cache_dir = self.datasets_dir / "tokenized" / cache_key
+        
+        if cache_dir.exists():
+            logger.info(f"Loading tokenized dataset from cache: {cache_dir}")
+            try:
+                return load_from_disk(str(cache_dir))
+            except Exception as e:
+                logger.warning(f"Failed to load cached dataset: {e}. Re-tokenizing.")
+        
+        logger.info(f"Tokenizing dataset {dataset_path_str} for {tokenizer_name}")
+        
+        # Load and split
+        dataset = load_dataset("json", data_files=dataset_path_str, split="train")
+        
+        # Ensure 'text' column exists
+        if "text" not in dataset.column_names:
+            logger.info("Column 'text' not found in dataset. Attempting to generate it from other fields.")
+            
+            def generate_text_field(example):
+                if "prompt" in example and "completion" in example:
+                    text = f"{example['prompt']}\n\n{example['completion']}"
+                elif "instruction" in example:
+                    instruction = example["instruction"]
+                    input_text = example.get("input", "")
+                    output = example.get("output", "")
+                    if input_text:
+                        text = f"### Instruction:\n{instruction}\n\n### Input:\n{input_text}\n\n### Response:\n{output}"
+                    else:
+                        text = f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
+                else:
+                    # Fallback: Dump as JSON string to preserve information
+                    import json
+                    # Convert LazyRow/dict-like object to standard dict for serialization
+                    text = json.dumps(dict(example))
+                
+                return {"text": text}
+
+            dataset = dataset.map(generate_text_field)
+        
+        if validation_split > 0:
+            split_dataset = dataset.train_test_split(
+                test_size=validation_split,
+                seed=seed
+            )
+            dataset = split_dataset
+        
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, token=settings.hf_token)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            
+        def tokenize_function(examples):
+            tokenized = tokenizer(
+                examples["text"],
+                truncation=True,
+                max_length=max_seq_length,
+                padding="max_length"
+            )
+            tokenized["labels"] = tokenized["input_ids"].copy()
+            return tokenized
+        
+        # Handle both DatasetDict (when split) and Dataset (when no split)
+        if isinstance(dataset, dict):
+            columns_to_remove = dataset["train"].column_names
+        else:
+            columns_to_remove = dataset.column_names
+            
+        tokenized_dataset = dataset.map(
+            tokenize_function,
+            batched=True,
+            remove_columns=columns_to_remove,
+            desc="Tokenizing dataset"
+        )
+        
+        # Save to cache
+        try:
+            tokenized_dataset.save_to_disk(str(cache_dir))
+            logger.info(f"Saved tokenized dataset to cache: {cache_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to save dataset to cache: {e}")
+            
+        return tokenized_dataset

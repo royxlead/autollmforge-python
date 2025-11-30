@@ -18,6 +18,13 @@ export default function HyperparameterTuning() {
     save_steps: 500,
     eval_steps: 500,
     logging_steps: 10,
+    seed: 42,
+    validation_split: 0.1,
+    // Ablation toggles
+    qlora: true,
+    use_gradient_checkpointing: true,
+    use_double_quant: true,
+    use_paged_optimizers: true,
   });
 
   const parseNumber = (value: string, fallback: number): number => {
@@ -71,6 +78,12 @@ export default function HyperparameterTuning() {
         save_steps: data.config.save_steps ?? 500,
         eval_steps: data.config.eval_steps ?? 500,
         logging_steps: data.config.logging_steps ?? 10,
+        seed: data.config.seed ?? 42,
+        validation_split: data.config.validation_split ?? 0.1,
+        qlora: data.config.qlora ?? true,
+        use_gradient_checkpointing: data.config.gradient_checkpointing ?? true,
+        use_double_quant: data.config.bnb_4bit_use_double_quant ?? true,
+        use_paged_optimizers: data.config.use_paged_optimizers ?? true,
       });
       
       console.log('Config updated successfully');
@@ -89,7 +102,17 @@ export default function HyperparameterTuning() {
       model_id: modelInfo.model_id,
       dataset_id: datasetInfo.dataset_id,
       task_type: 'text-generation',
-      ...config,
+      learning_rate: config.learning_rate,
+      batch_size: config.batch_size,
+      gradient_accumulation_steps: config.gradient_accumulation_steps,
+      num_epochs: config.num_epochs,
+      max_seq_length: config.max_seq_length,
+      warmup_steps: config.warmup_steps,
+      save_steps: config.save_steps,
+      eval_steps: config.eval_steps,
+      logging_steps: config.logging_steps,
+      seed: config.seed,
+      validation_split: config.validation_split,
       use_lora: true,
       lora_config: {
         r: 8,
@@ -99,12 +122,17 @@ export default function HyperparameterTuning() {
         bias: 'none',
         task_type: 'CAUSAL_LM',
       },
-      load_in_4bit: true,
-      quantization: '4bit',
+      // Ablation toggles
+      qlora: config.qlora,
+      load_in_4bit: config.qlora,
+      load_in_8bit: false,
+      quantization: config.qlora ? '4bit' : null,
       bnb_4bit_quant_type: 'nf4',
-      bnb_4bit_use_double_quant: true,
+      bnb_4bit_use_double_quant: config.use_double_quant,
       bnb_4bit_compute_dtype: 'float16',
-      optimizer: 'paged_adamw_8bit',
+      gradient_checkpointing: config.use_gradient_checkpointing,
+      use_paged_optimizers: config.use_paged_optimizers,
+      optimizer: config.use_paged_optimizers ? 'paged_adamw_8bit' : 'adamw_torch',
     };
 
     setTrainingConfig(trainingConfig as any);
@@ -308,6 +336,102 @@ export default function HyperparameterTuning() {
                 <p>• <strong className="text-white">Memory Savings:</strong> <span className="text-green-400 font-bold">~75% reduction</span></p>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Ablation Toggles */}
+        <div className="bg-gradient-to-r from-purple-500/10 to-transparent border border-purple-500/30 rounded-xl p-6 backdrop-blur-sm">
+          <h4 className="font-bold text-purple-400 mb-4 text-lg flex items-center gap-2">
+            <Sparkles className="w-5 h-5" />
+            Ablation Settings (Advanced)
+          </h4>
+          <p className="text-sm text-gray-400 mb-4">
+            Toggle these settings to compare different training configurations and generate baseline metrics.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="flex items-center gap-3 p-4 bg-black/30 rounded-xl border border-white/10 hover:border-purple-500/30 transition-all cursor-pointer">
+              <input
+                type="checkbox"
+                checked={config.qlora}
+                onChange={(e) => setConfig({ ...config, qlora: e.target.checked })}
+                className="w-5 h-5 rounded border-white/20 bg-black/50 text-purple-500 focus:ring-purple-500/20"
+              />
+              <div>
+                <span className="text-white font-semibold">QLoRA (4-bit)</span>
+                <p className="text-xs text-gray-400">Disable for baseline LoRA comparison</p>
+              </div>
+            </label>
+            
+            <label className="flex items-center gap-3 p-4 bg-black/30 rounded-xl border border-white/10 hover:border-purple-500/30 transition-all cursor-pointer">
+              <input
+                type="checkbox"
+                checked={config.use_gradient_checkpointing}
+                onChange={(e) => setConfig({ ...config, use_gradient_checkpointing: e.target.checked })}
+                className="w-5 h-5 rounded border-white/20 bg-black/50 text-purple-500 focus:ring-purple-500/20"
+              />
+              <div>
+                <span className="text-white font-semibold">Gradient Checkpointing</span>
+                <p className="text-xs text-gray-400">Saves VRAM, slightly slower</p>
+              </div>
+            </label>
+            
+            <label className="flex items-center gap-3 p-4 bg-black/30 rounded-xl border border-white/10 hover:border-purple-500/30 transition-all cursor-pointer">
+              <input
+                type="checkbox"
+                checked={config.use_double_quant}
+                onChange={(e) => setConfig({ ...config, use_double_quant: e.target.checked })}
+                className="w-5 h-5 rounded border-white/20 bg-black/50 text-purple-500 focus:ring-purple-500/20"
+              />
+              <div>
+                <span className="text-white font-semibold">Double Quantization</span>
+                <p className="text-xs text-gray-400">Nested quantization for extra savings</p>
+              </div>
+            </label>
+            
+            <label className="flex items-center gap-3 p-4 bg-black/30 rounded-xl border border-white/10 hover:border-purple-500/30 transition-all cursor-pointer">
+              <input
+                type="checkbox"
+                checked={config.use_paged_optimizers}
+                onChange={(e) => setConfig({ ...config, use_paged_optimizers: e.target.checked })}
+                className="w-5 h-5 rounded border-white/20 bg-black/50 text-purple-500 focus:ring-purple-500/20"
+              />
+              <div>
+                <span className="text-white font-semibold">Paged Optimizers</span>
+                <p className="text-xs text-gray-400">8-bit paged AdamW for memory efficiency</p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        {/* Reproducibility Settings */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="group">
+            <label className="block text-sm font-bold text-green-400 mb-3 tracking-wide">
+              RANDOM SEED
+            </label>
+            <input
+              type="number"
+              value={config.seed}
+              onChange={(e) => setConfig({ ...config, seed: parseIntSafe(e.target.value, config.seed) })}
+              className="w-full rounded-xl bg-black/50 border border-white/20 px-5 py-4 text-white focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none transition-all duration-300 text-lg group-hover:border-white/30"
+            />
+            <p className="text-xs text-gray-500 mt-2 ml-1">For reproducibility</p>
+          </div>
+
+          <div className="group">
+            <label className="block text-sm font-bold text-green-400 mb-3 tracking-wide">
+              VALIDATION SPLIT
+            </label>
+            <input
+              type="number"
+              step="0.05"
+              min="0"
+              max="0.5"
+              value={config.validation_split}
+              onChange={(e) => setConfig({ ...config, validation_split: parseNumber(e.target.value, config.validation_split) })}
+              className="w-full rounded-xl bg-black/50 border border-white/20 px-5 py-4 text-white focus:border-green-500 focus:ring-2 focus:ring-green-500/20 outline-none transition-all duration-300 text-lg group-hover:border-white/30"
+            />
+            <p className="text-xs text-gray-500 mt-2 ml-1">Portion for evaluation (0.1 = 10%)</p>
           </div>
         </div>
       </div>
