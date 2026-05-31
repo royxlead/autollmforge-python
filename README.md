@@ -14,9 +14,9 @@
 
 ## Overview
 
-AutoLLM Forge is a production-grade fine-tuning platform for large language models — from 2B to 70B parameters. It implements QLoRA (Quantized Low-Rank Adaptation) to make fine-tuning accessible without enterprise-grade hardware, achieving **75% VRAM reduction** compared to full fine-tuning while maintaining output quality.
+AutoLLM Forge is a production-grade fine-tuning platform for large language models from 2B to 70B parameters. It implements QLoRA (Quantized Low-Rank Adaptation) to make fine-tuning accessible without enterprise-grade hardware, achieving **75% VRAM reduction** compared to full fine-tuning while maintaining output quality.
 
-The platform abstracts the full fine-tuning workflow — model selection, dataset validation, hyperparameter optimization, real-time training monitoring, and artifact export — into a guided 5-step pipeline with a live dashboard.
+The platform abstracts the full fine-tuning workflow model selection, dataset validation, hyperparameter optimization, real-time training monitoring, and artifact export into a guided 5-step pipeline with a live dashboard.
 
 > *Running a 70B model shouldn't require a $10K GPU setup.*
 
@@ -24,7 +24,7 @@ The platform abstracts the full fine-tuning workflow — model selection, datase
 
 ## Engineering Design
 
-**The core insight:** efficient fine-tuning is not about compute — it is about which parameters actually matter. QLoRA freezes base model weights and trains only low-rank adapter matrices, reducing the trainable parameter count by orders of magnitude.
+**The core insight:** efficient fine-tuning is not about compute it is about which parameters actually matter. QLoRA freezes base model weights and trains only low-rank adapter matrices, reducing the trainable parameter count by orders of magnitude.
 
 ```
 Base Model (frozen)
@@ -124,23 +124,23 @@ Open `http://localhost:3000` and launch the workspace.
 
 ## The 5-Step Pipeline
 
-**01 Inspect** — Select and analyze your base model. View parameter count, architecture, and VRAM requirements.
+**01 Inspect** : Select and analyze your base model. View parameter count, architecture, and VRAM requirements.
 
-**02 Prepare** — Upload and validate your training dataset. Automated format detection and preprocessing.
+**02 Prepare** : Upload and validate your training dataset. Automated format detection and preprocessing.
 
-**03 Optimize** — Configure QLoRA parameters with smart defaults. Override any hyperparameter manually.
+**03 Optimize** : Configure QLoRA parameters with smart defaults. Override any hyperparameter manually.
 
-**04 Train** — Real-time training dashboard with live loss curves, VRAM profiling, and throughput metrics.
+**04 Train** : Real-time training dashboard with live loss curves, VRAM profiling, and throughput metrics.
 
-**05 Ship** — Export merged model, standalone LoRA weights, and inference code templates.
+**05 Ship** : Export merged model, standalone LoRA weights, and inference code templates.
 
 ---
 
 ## Related Work
 
-- [Auto-Researcher](https://github.com/royxlead/auto-researcher-python) — Multi-agent academic research system
-- [CURA](https://github.com/royxlead/cura-python) — RAG-based medical QA
-- [Self-Diagnosing Neural Models](https://github.com/royxlead/self-diagnosing-neural-models-python) — Uncertainty estimation research
+- [Auto-Researcher](https://github.com/royxlead/auto-researcher-python) - Multi-agent academic research system
+- [CURA](https://github.com/royxlead/cura-python) - RAG-based medical QA
+- [Self-Diagnosing Neural Models](https://github.com/royxlead/self-diagnosing-neural-models-python) - Uncertainty estimation research
 
 ---
 
