@@ -5,11 +5,11 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/PyTorch-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" />
   <img src="https://img.shields.io/badge/HuggingFace-1000%2B%20Models-FFD21E?style=flat-square&logo=huggingface&logoColor=black" />
-  <img src="https://img.shields.io/badge/VRAM%20Reduction-75%25-14b8a6?style=flat-square" />
+  <img src="https://img.shields.io/badge/QLoRA-4bit%20NF4-14b8a6?style=flat-square" />
   <img src="https://img.shields.io/badge/License-MIT-6366f1?style=flat-square" />
 </p>
 
-> Production-grade fine-tuning platform for large language models from 2B to 70B parameters. Implements QLoRA to make fine-tuning accessible without enterprise-grade hardware. **75% VRAM reduction** vs full fine-tuning, with a guided 5-step pipeline and live training dashboard.
+> Production-grade fine-tuning platform for large language models from 2B to 70B parameters. Implements QLoRA (4-bit NF4 quantization + LoRA adapters) to make fine-tuning accessible without enterprise-grade hardware, with a guided 5-step pipeline and live training dashboard.
 
 ---
 
@@ -24,6 +24,7 @@
 - [LoRA vs Full Fine-Tune](#lora-vs-full-fine-tune)
 - [Features](#features)
 - [Installation](#installation)
+- [Usage](#usage)
 - [The 5-Step Pipeline](#the-5-step-pipeline)
 - [Repository Structure](#repository-structure)
 - [Related Work](#related-work)
@@ -43,42 +44,42 @@ The alternative is not to give up on fine-tuning. It is to ask which parameters 
 
 ## Key Result
 
-> **LoRA fine-tuning on GPT-2 with 0.24% of parameters (295K / 124M) matched full fine-tuning on generalization (perplexity 16.13 vs 20.41) while running 3.5× faster and using 421× fewer trainable parameters.**
+> **LoRA fine-tuning on GPT-2 with 0.24% of parameters (295K / 124M) matched full fine-tuning on generalization - perplexity 16.13 vs 20.41 - while running 3.5x faster and using 421x fewer trainable parameters.**
 
-Full fine-tuning overfit on the small dataset (loss → 0.80) while LoRA's low-rank constraint acted as a regularizer, achieving better held-out perplexity despite higher training loss.
+Full fine-tuning overfit on the small dataset (loss dropped to 0.80) while LoRA's low-rank constraint acted as a regularizer, achieving better held-out perplexity despite higher training loss. This is the tradeoff that makes LoRA the default for VRAM-constrained environments.
 
 ---
 
 ## Engineering Design
 
-The core insight: efficient fine-tuning is not about compute. It is about which parameters actually matter. QLoRA freezes base model weights and trains only low-rank adapter matrices, reducing the trainable parameter count by orders of magnitude.
+The core insight: efficient fine-tuning is not about compute. It is about which parameters actually matter. QLoRA freezes base model weights and trains only low-rank adapter matrices, reducing the trainable parameter count by orders of magnitude. On GPU, 4-bit NF4 quantization additionally reduces the base model's memory footprint by ~75% compared to FP16 full fine-tuning.
 
 ```
 Base Model (frozen)
-      │
-      ▼
-┌─────────────────┐
-│  Quantization   │   4-bit NF4 quantization (bitsandbytes)
-│  (QLoRA)        │   75% VRAM reduction vs full fine-tuning
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  LoRA Adapters  │   Low-rank matrices injected into attention layers
-│  (PEFT)         │   Only adapters are trained, base weights frozen
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Training Loop  │   Real-time loss, VRAM, throughput monitoring
-│  (PyTorch)      │   WebSocket streaming to Next.js dashboard
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Artifact Export│   Merged model, LoRA weights, config templates
-│                 │   Ready for inference deployment
-└─────────────────┘
+      |
+      v
++-----------------+
+|  Quantization   |   4-bit NF4 quantization (bitsandbytes)
+|  (QLoRA)        |   ~75% VRAM reduction vs FP16 full fine-tune (GPU)
++--------+--------+
+         |
+         v
++-----------------+
+|  LoRA Adapters  |   Low-rank matrices injected into attention layers
+|  (PEFT)         |   Only adapters are trained, base weights frozen
++--------+--------+
+         |
+         v
++-----------------+
+|  Training Loop  |   Real-time loss, VRAM, throughput monitoring
+|  (PyTorch)      |   WebSocket streaming to Next.js dashboard
++--------+--------+
+         |
+         v
++-----------------+
+|  Artifact Export|   Merged model, LoRA weights, config templates
+|                 |   Ready for inference deployment
++-----------------+
 ```
 
 ---
@@ -97,18 +98,17 @@ Base Model (frozen)
 
 ## Experimental Setup
 
-**Comparison:** LoRA vs Full Fine-Tune on GPT-2 (137M parameters), 10 prompt-engineering samples.
-Both runs used identical settings. The only variable was `use_lora`.
+**Comparison:** LoRA vs Full Fine-Tune on GPT-2 (124M parameters), 10 prompt-engineering samples. Both runs used identical settings. The only variable was `use_lora`.
 
 | Parameter | Value |
 |---|---|
-| Model | GPT-2 (137M parameters) |
+| Model | GPT-2 (124,440,576 parameters) |
 | Dataset | 10 prompt-engineering samples |
 | Epochs | 3 |
 | Learning Rate | 5e-5 (cosine scheduler, 5 warmup steps) |
 | Batch Size | 1 (gradient accumulation: 2) |
 | Seed | 42 |
-| LoRA Config | r=8, α=16, target: c_attn |
+| LoRA Config | r=8, alpha=16, target modules: c_attn |
 | Hardware | CPU (torch 2.11.0+cpu) |
 
 ---
@@ -125,9 +125,9 @@ Both runs used identical settings. The only variable was `use_lora`.
 | **Trainable Parameters** | 294,912 / 124,440,576 (0.24%) |
 | **Samples/sec** | 0.295 |
 | **Steps/sec** | 0.147 |
-| **Total Steps** | 15 (3 epochs × 5 steps/epoch) |
+| **Total Steps** | 15 (3 epochs x 5 steps/epoch) |
 
-**Loss curve:**
+### Loss Curve
 
 | Step | Loss | Learning Rate |
 |---|---|---|
@@ -138,12 +138,21 @@ Both runs used identical settings. The only variable was `use_lora`.
 | 10 | 8.0822 | 3.27e-5 |
 | 15 | 8.5937 | 1.22e-6 (end) |
 
-**Output artifacts per run:**
-- `storage/outputs/{job_id}/final_model/` : Fine-tuned LoRA adapter weights
-- `storage/outputs/{job_id}/training_metrics.json` : Loss, runtime, throughput
-- `storage/outputs/{job_id}/model_card.json` : Full config, dataset stats, evaluation
-- `storage/experiments/{job_id}/loss.png` : Training loss graph
-- `storage/experiments/{job_id}/metrics.jsonl` : Per-step metrics log
+### Output Artifacts
+
+Each training run produces:
+
+```
+storage/outputs/{job_id}/
++-- final_model/            # LoRA adapter weights
++-- training_metrics.json   # Loss, runtime, throughput
++-- model_card.json         # Config, dataset stats, evaluation
+
+storage/experiments/{job_id}/
++-- loss.png                # Training loss graph
++-- metrics.jsonl           # Per-step metrics log
++-- metadata.json           # Ablations, environment
+```
 
 ---
 
@@ -151,28 +160,49 @@ Both runs used identical settings. The only variable was `use_lora`.
 
 Both runs: seed 42, 3 epochs, LR 5e-5, cosine scheduler. Only `use_lora` differed.
 
-| Metric | LoRA (0.24% params) | Full Fine-Tune (100% params) | Δ |
+| Metric | LoRA (0.24% params) | Full Fine-Tune (100% params) | Delta |
 |---|---|---|---|
-| Training Time | 101.8s | 355.0s | 3.5× faster |
+| Training Time | 101.8s | 355.0s | 3.5x faster |
 | Final Loss | 8.513 | 2.957 | n/a |
 | **Perplexity** | **16.13** | **20.41** | **21% better** |
-| Samples/sec | 0.295 | 0.085 | 3.5× faster |
+| Samples/sec | 0.295 | 0.085 | 3.5x faster |
 | Total FLOPs | 7.87T | 7.84T | ~identical |
-| Trainable Params | 295K | 124M | 421× fewer |
-| Grad Norm (start) | 2.28 | 180.53 | 79× smaller |
-| Grad Norm (end) | 2.17 | 4.44 | 2× smaller |
+| Trainable Params | 295K | 124M | 421x fewer |
+| Grad Norm (start) | 2.28 | 180.53 | 79x smaller |
+| Grad Norm (end) | 2.17 | 4.44 | 2x smaller |
+
+### Loss progression
+
+| Step | LoRA Loss | Full FT Loss |
+|---|---|---|
+| 1 | 8.338 | 8.366 |
+| 3 | 8.633 | 7.493 |
+| 5 | 8.553 | 3.609 |
+| 7 | 9.156 | 1.178 |
+| 10 | 8.082 | 1.104 |
+| 15 | 8.594 | 0.795 |
 
 ### What the numbers show
 
-**Speed.** LoRA ran 3.5× faster because only 0.24% of parameters needed gradients. On GPU this gap narrows but remains significant.
+**Speed.** LoRA ran 3.5x faster because only 0.24% of parameters needed gradients. On GPU this gap narrows but remains significant.
 
-**Loss vs generalization.** Full fine-tune achieved lower training loss (2.96 vs 8.51) by memorizing the 10-sample dataset. Loss dropped to 0.80 by step 15. LoRA's low-rank constraint prevented memorization. Held-out perplexity penalizes overfitting, which is why LoRA wins on the metric that matters.
+**Loss vs generalization.** Full fine-tune achieved lower training loss (2.96 vs 8.51) by memorizing the 10-sample dataset - loss dropped to 0.80 by step 15. LoRA's low-rank constraint prevented memorization. Held-out perplexity penalizes overfitting, which is why LoRA wins on the metric that matters.
 
-**Gradient stability.** LoRA gradients stayed in a healthy range (1.9-2.6) throughout. Full fine-tune started with a gradient norm of 180+ before settling, requiring more careful LR tuning in practice.
+**Gradient stability.** LoRA gradients stayed in a healthy range (1.9-2.6) throughout. Full fine-tune started with a gradient norm of 180+ before settling. LoRA is more numerically stable and requires less careful LR tuning in practice.
 
-**Memory.** 421× fewer trainable parameters means LoRA fits on hardware where full fine-tuning is not an option. The 295K adapter parameters would train on a free-tier T4.
+**Memory.** 421x fewer trainable parameters means LoRA fits on hardware where full fine-tuning is not an option. The 295K adapter parameters would train on a free-tier T4 GPU.
 
-**Bottom line:** On small datasets, LoRA is faster, more stable, and generalizes better. On larger datasets (1000+ samples), full fine-tuning closes the perplexity gap, but LoRA remains the default choice for VRAM-constrained environments.
+**Bottom line.** On small datasets, LoRA is faster, more stable, and generalizes better. On larger datasets (1000+ samples), full fine-tuning closes the perplexity gap, but LoRA remains the default choice for VRAM-constrained environments.
+
+### Verdict
+
+| Consideration | Winner |
+|---|---|
+| Speed / Efficiency | LoRA (3.5x faster, 421x fewer params) |
+| Final training loss | Full FT (2.96 vs 8.51) |
+| Generalization | LoRA (better perplexity on small data) |
+| Gradient stability | LoRA (2.28 vs 180.53 initial grad norm) |
+| Memory footprint | LoRA (295K vs 124M trainable params) |
 
 ---
 
@@ -212,10 +242,10 @@ cd frontend && npm install
 ## Usage
 
 ```bash
-# Terminal 1 (backend)
+# Terminal 1 - backend
 python run.py
 
-# Terminal 2 (frontend)
+# Terminal 2 - frontend
 cd frontend && npm run dev
 ```
 
@@ -225,15 +255,15 @@ Open `http://localhost:3000` and launch the workspace. The platform loads any Hu
 
 ## The 5-Step Pipeline
 
-**01 Inspect:** Select and analyze your base model. View parameter count, architecture, and VRAM requirements before committing to a run.
+**01 Inspect** - Select and analyze your base model. View parameter count, architecture, and estimated VRAM requirements before committing to a run.
 
-**02 Prepare:** Upload and validate your training dataset. Automated format detection handles instruction tuning, completion, and chat template formats.
+**02 Prepare** - Upload and validate your training dataset. Automated format detection handles instruction tuning, completion, and chat template formats.
 
-**03 Optimize:** Configure QLoRA parameters with smart defaults derived from model size and dataset. Override any hyperparameter manually.
+**03 Optimize** - Configure QLoRA parameters with smart defaults derived from model size and dataset. Override any hyperparameter manually.
 
-**04 Train:** Real-time dashboard with live loss curves, VRAM profiling, and throughput metrics streamed via WebSockets.
+**04 Train** - Real-time dashboard with live loss curves, VRAM profiling, and throughput metrics streamed via WebSockets.
 
-**05 Ship:** Export merged model weights, standalone LoRA adapters, and inference code templates ready for deployment.
+**05 Ship** - Export merged model weights, standalone LoRA adapters, and inference code templates ready for deployment.
 
 ---
 
@@ -242,15 +272,18 @@ Open `http://localhost:3000` and launch the workspace. The platform loads any Hu
 ```
 autollmforge-python/
 |
-+-- run.py                  # Entry point
-+-- backend/                # FastAPI server, training loop, QLoRA logic
-+-- frontend/               # Next.js dashboard, WebSocket client
++-- run.py                   # Entry point
++-- backend/                 # FastAPI server, training loop, QLoRA logic
+|   +-- main.py              # API endpoints
+|   +-- services/            # Training, model analysis, hyperparameter optimization
+|   +-- models/schemas.py    # Pydantic request/response types
+|   +-- utils/               # Compute estimation, HF utilities, logging
++-- frontend/                # Next.js dashboard, WebSocket client
 +-- storage/
-|   +-- outputs/            # Per-job model artifacts and metrics
-|   +-- experiments/        # Loss plots and per-step logs
+|   +-- outputs/             # Per-job model artifacts and metrics
+|   +-- experiments/         # Loss plots and per-step logs
 +-- requirements.txt
 +-- LICENSE
-+-- README.md
 ```
 
 ---
@@ -260,8 +293,9 @@ autollmforge-python/
 - [Auto-Researcher](https://github.com/royxlead/auto-researcher-python) - Multi-agent academic research system
 - [CURA](https://github.com/royxlead/cura-python) - RAG-based medical QA
 - [Self-Diagnosing Neural Models](https://github.com/royxlead/self-diagnosing-neural-models-python) - Uncertainty estimation for model outputs
+- [DriftWatch](https://github.com/royxlead/driftwatch-python) - Production drift monitoring for fine-tuned models
 
-AutoLLM Forge sits at the beginning of this pipeline: fine-tune carefully, then quantify uncertainty in deployment via Self-Diagnosing Neural Models.
+AutoLLM Forge sits at the beginning of this pipeline: fine-tune carefully with QLoRA, then quantify uncertainty in deployment via Self-Diagnosing Neural Models and monitor for distribution shift via DriftWatch.
 
 ---
 
